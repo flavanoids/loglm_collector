@@ -8,6 +8,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from collectors.base import LogEntry
 from collectors.custom import CustomSourceCollector
+from collectors.scout import LogScout, ScoutResult
 from detector import SystemDetector
 from log_formatter import format_entries, generate_output_paths, save_json, save_text_bundle
 from loglm_client import check_api_running, save_to_file, send_entries
@@ -92,9 +93,10 @@ def _top_menu(store: TemplateStore, api_running: bool) -> str:  # pylint: disabl
     console.print("  [bold]1.[/bold] Collect logs")
     console.print("  [bold]2.[/bold] Manage templates")
     console.print("  [bold]3.[/bold] Label responses (build training data)")
+    console.print("  [bold]4.[/bold] Scout for errors (live monitor)")
     console.print("  [bold]q.[/bold] Quit")
     console.print()
-    return Prompt.ask("  Select", choices=["1", "2", "3", "q"], default="1")
+    return Prompt.ask("  Select", choices=["1", "2", "3", "4", "q"], default="1")
 
 
 def main() -> int:
@@ -134,6 +136,10 @@ def main() -> int:
         ResponseLabeler().run()
         return 0
 
+    if action == "4":
+        _run_scout()
+        return 0
+
     # action == "1": collect
     template = select_template(store)
 
@@ -152,6 +158,40 @@ def main() -> int:
         summary.append((f"[dim]Template: {template.name}[/dim]", 0))
     menu.show_summary(summary, output_path, config.use_api and api_running)
     return 0
+
+
+def _run_scout() -> None:
+    """Run the live log scout."""
+    menu = InteractiveMenu()
+    duration = menu.choose_scout_duration()
+
+    mins = duration / 60
+    console.print()
+    console.print(
+        f"[bold]Scouting for errors across /var/log and journalctl "
+        f"for {mins:.0f} minute{'s' if mins != 1 else ''}\u2026[/bold]"
+    )
+    console.print("[dim]Press Ctrl+C to stop early.[/dim]")
+    console.print()
+
+    scout = LogScout(duration_seconds=duration)
+    hit_count = 0
+
+    def _on_hit(hit) -> None:
+        nonlocal hit_count
+        hit_count += 1
+        src = hit.source.replace("/var/log/", "")
+        console.print(f"  [yellow]\u26a0[/yellow] [{src}] {hit.line[:100]}")
+
+    try:
+        result = scout.run(on_hit=_on_hit)
+    except KeyboardInterrupt:
+        scout.stop()
+        console.print()
+        console.print("[yellow]Scout stopped early by user.[/yellow]")
+        result = ScoutResult(duration_seconds=duration, hits=list(scout._hits))
+
+    menu.show_scout_results(result)
 
 
 if __name__ == "__main__":

@@ -15,6 +15,7 @@ Three actions from a single interactive menu:
 | **Collect logs** | Detect → collect → format → save to file or POST to LogLM API |
 | **Manage templates** | Create/edit/delete templates with custom instruction rules and log sources |
 | **Label responses** | Load a collected JSON file and annotate `Response` fields for fine-tuning |
+| **Scout for errors** | Monitor `/var/log` and journalctl in real-time for a set duration, then report which sources raised attention |
 
 ---
 
