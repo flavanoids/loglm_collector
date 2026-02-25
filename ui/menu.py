@@ -9,6 +9,7 @@ from rich.table import Table
 
 from collectors.base import BaseCollector
 from collectors import COLLECTOR_REGISTRY
+from collectors.scout import LogScout, ScoutResult
 from detector import DetectionResult
 
 console = Console()
@@ -168,6 +169,66 @@ class InteractiveMenu:
 
         console.print()
         return use_api
+
+    # ── Scout helpers ─────────────────────────────────────────────────
+
+    def choose_scout_duration(self) -> int:
+        """Prompt the user for a scouting duration; return seconds."""
+        console.print("[bold]How long should the scout monitor for?[/bold]")
+        console.print()
+        console.print("  [bold]1.[/bold] 1 minute  (quick test)")
+        console.print("  [bold]2.[/bold] 5 minutes")
+        console.print("  [bold]3.[/bold] 15 minutes")
+        console.print("  [bold]4.[/bold] 30 minutes")
+        console.print("  [bold]5.[/bold] 1 hour")
+        console.print()
+        durations = {"1": 60, "2": 300, "3": 900, "4": 1800, "5": 3600}
+        choice = Prompt.ask("  Select duration", choices=list(durations.keys()), default="2")
+        return durations[choice]
+
+    def show_scout_results(self, result: ScoutResult) -> None:
+        """Display a rich summary of scouting results."""
+        console.print()
+        mins = result.duration_seconds / 60
+        console.print(
+            Panel.fit(
+                f"[bold cyan]Scout Report[/bold cyan]\n"
+                f"[dim]Monitored for {mins:.0f} minute{'s' if mins != 1 else ''} — "
+                f"{result.total} noteworthy line{'s' if result.total != 1 else ''} captured[/dim]",
+                border_style="cyan",
+            )
+        )
+        console.print()
+
+        if not result.hits:
+            console.print("  [green]No error-level messages detected — all quiet.[/green]")
+            console.print()
+            return
+
+        # Summary table by source
+        table = Table(title="Hits by Source", border_style="yellow")
+        table.add_column("Source", style="bold")
+        table.add_column("Hits", justify="right")
+        table.add_column("Keywords seen")
+
+        for source, hits in sorted(result.sources.items(), key=lambda kv: -len(kv[1])):
+            keywords = sorted({h.keyword for h in hits})
+            table.add_row(source, str(len(hits)), ", ".join(keywords))
+
+        table.add_row("[bold]TOTAL[/bold]", f"[bold]{result.total}[/bold]", "")
+        console.print(table)
+        console.print()
+
+        # Show up to 15 sample lines
+        sample_limit = 15
+        console.print(f"[bold]Sample lines[/bold] (up to {sample_limit}):")
+        console.print()
+        for hit in result.hits[:sample_limit]:
+            src_short = hit.source.replace("/var/log/", "")
+            console.print(f"  [dim]{src_short}[/dim]  {hit.line[:120]}")
+        if result.total > sample_limit:
+            console.print(f"  [dim]… and {result.total - sample_limit} more[/dim]")
+        console.print()
 
     def show_collection_progress(
         self,
