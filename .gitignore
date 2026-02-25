@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+*.pyo
+loglm_output_*.json
+loglm_output_*.txt
