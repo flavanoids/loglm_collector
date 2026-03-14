@@ -11,8 +11,12 @@ from collectors.custom import CustomSourceCollector
 from detector import SystemDetector
 from log_formatter import format_entries, generate_output_paths, save_json, save_text_bundle
 from loglm_client import check_api_running, save_to_file, send_entries
-from templates.store import Template, TemplateStore
-from ui.menu import CollectionConfig, InteractiveMenu
+from templates.store import ISSUE_TYPE_CONFIG, Template, TemplateStore
+from ui.menu import (
+    CollectionConfig,
+    InteractiveMenu,
+    choose_issue_type,
+)
 from ui.template_builder import ResponseLabeler, TemplateManager, select_template
 
 console = Console()
@@ -135,10 +139,15 @@ def main() -> int:
         return 0
 
     # action == "1": collect
-    template = select_template(store)
-
+    issue_type = choose_issue_type(detection)
     menu = InteractiveMenu(api_running=api_running, api_url=_API_URL)
-    config = menu.run(detection)
+
+    if issue_type == "all":
+        template = select_template(store)
+        config = menu.run(detection)
+    else:
+        template = ISSUE_TYPE_CONFIG[issue_type]["template"]
+        config = menu.run_issue_centric(detection, issue_type)
 
     if not config.profiles:
         console.print("[yellow]No profiles selected. Exiting.[/yellow]")
@@ -148,7 +157,11 @@ def main() -> int:
     loglm_entries = format_entries(all_entries, template)
     output_path = _output(config, loglm_entries, all_entries, api_running)
 
-    if template:
+    if issue_type != "all" and issue_type in ISSUE_TYPE_CONFIG:
+        summary.append(
+            (f"[dim]Issue type: {ISSUE_TYPE_CONFIG[issue_type]['label']}[/dim]", 0)
+        )
+    elif template:
         summary.append((f"[dim]Template: {template.name}[/dim]", 0))
     menu.show_summary(summary, output_path, config.use_api and api_running)
     return 0

@@ -9,7 +9,15 @@ from rich.table import Table
 
 from collectors.base import BaseCollector
 from collectors import COLLECTOR_REGISTRY
+from collectors.process_target import (
+    ProcessTarget,
+    ProcessTargetCollector,
+    get_container_runtime_info,
+    get_top_processes,
+    resolve_target,
+)
 from detector import DetectionResult
+from templates.store import ISSUE_TYPE_CONFIG
 
 console = Console()
 
@@ -26,6 +34,56 @@ HOURS_LABELS = {
     "3": "Last 24 hours",
     "4": "Last 7 days",
 }
+
+# Order for issue-centric menu (all is always last)
+ISSUE_TYPE_ORDER: list[str] = [
+    "kernel_panic",
+    "gpu",
+    "memory",
+    "process",
+    "storage",
+    "auth",
+    "all",
+]
+
+
+def _issue_type_available(detection: DetectionResult, issue_key: str) -> bool:
+    """Return True if this issue type is available given detected profiles."""
+    if issue_key not in ISSUE_TYPE_CONFIG:
+        return False
+    profiles = ISSUE_TYPE_CONFIG[issue_key].get("profiles")
+    if profiles is None:
+        return True
+    for profile in profiles:
+        det = detection.get_profile(profile)
+        if det is None or det.confidence <= 0.0:
+            return False
+    return True
+
+
+def get_available_issue_choices(detection: DetectionResult) -> list[tuple[str, str]]:
+    """Return (key, label) pairs for issue types that are available."""
+    return [
+        (key, ISSUE_TYPE_CONFIG[key]["label"])
+        for key in ISSUE_TYPE_ORDER
+        if key in ISSUE_TYPE_CONFIG and _issue_type_available(detection, key)
+    ]
+
+
+def choose_issue_type(detection: DetectionResult) -> str:
+    """Show 'What do you want to collect?' menu; return issue type key."""
+    choices = get_available_issue_choices(detection)
+    if not choices:
+        return "all"
+    console.print()
+    console.print("[bold]What do you want to collect?[/bold]")
+    console.print()
+    for idx, (_, label) in enumerate(choices, 1):
+        console.print(f"  [bold]{idx}.[/bold] {label}")
+    console.print()
+    choice_list = [str(i) for i in range(1, len(choices) + 1)]
+    choice = Prompt.ask("  Select", choices=choice_list, default="1")
+    return choices[int(choice) - 1][0]
 
 
 @dataclass
@@ -67,6 +125,83 @@ class InteractiveMenu:
             api_url=self.api_url,
         )
 
+    def run_issue_centric(
+        self, detection: DetectionResult, issue_type: str
+    ) -> CollectionConfig:
+        """Run simplified flow for a single issue type: one time range, no template."""
+        self._show_welcome(detection)
+        config = ISSUE_TYPE_CONFIG.get(issue_type, ISSUE_TYPE_CONFIG["all"])
+        profiles = config.get("profiles")
+        if not profiles:
+            return self.run(detection)
+
+        process_target: ProcessTarget | None = None
+        step_time = "Step 1: Time range"
+        step_output = "Step 2: Output mode"
+        if issue_type == "process":
+            process_target = self._choose_process_target()
+            console.print()
+            step_time = "Step 2: Time range"
+            step_output = "Step 3: Output mode"
+
+        console.print(f"[bold]{step_time}[/bold]")
+        console.print()
+        for key, label in HOURS_LABELS.items():
+            console.print(f"  {key}. {label}")
+        choice = Prompt.ask(
+            "  Select time range", choices=list(HOURS_LABELS.keys()), default="3"
+        )
+        hours = HOURS_OPTIONS[choice]
+        console.print()
+
+        profile_configs = self._build_issue_centric_profiles(
+            detection, profiles, hours, process_target
+        )
+        use_api = self._choose_output_mode(step_output)
+
+        return CollectionConfig(
+            profiles=profile_configs,
+            use_api=use_api,
+            api_url=self.api_url,
+        )
+
+    def _build_issue_centric_profiles(
+        self,
+        detection: DetectionResult,
+        profiles: list[str],
+        hours: int,
+        process_target: ProcessTarget | None,
+    ) -> list[ProfileConfig]:
+        """Build profile configs for issue-centric flow, optionally including process target."""
+        configs: list[ProfileConfig] = []
+        for profile in profiles:
+            det = detection.get_profile(profile)
+            if det is None or det.confidence <= 0.0:
+                continue
+            collector_cls = COLLECTOR_REGISTRY.get(profile)
+            if collector_cls is None:
+                continue
+            collector = collector_cls()
+            configs.append(
+                ProfileConfig(
+                    profile=profile,
+                    collector=collector,
+                    hours=hours,
+                    sources=collector.get_log_sources(),
+                )
+            )
+        if process_target is not None:
+            proc_collector = ProcessTargetCollector(process_target, hours)
+            configs.append(
+                ProfileConfig(
+                    profile="process",
+                    collector=proc_collector,
+                    hours=hours,
+                    sources=proc_collector.get_log_sources(),
+                )
+            )
+        return configs
+
     def _show_welcome(self, detection: DetectionResult) -> None:
         console.print()
         console.print(
@@ -78,10 +213,14 @@ class InteractiveMenu:
         )
         console.print()
 
-        table = Table(title="Detected System Profiles", border_style="blue")
-        table.add_column("Profile", style="bold")
-        table.add_column("Confidence", justify="center")
-        table.add_column("Evidence")
+        table = Table(
+            title="Detected system types",
+            caption="[dim]Match = how sure we are this applies to your system; details explain why.[/dim]",
+            border_style="blue",
+        )
+        table.add_column("Type", style="bold")
+        table.add_column("Match", justify="center")
+        table.add_column("Details")
 
         for p in detection.profiles:
             conf_str = f"{p.confidence:.0%}"
@@ -91,6 +230,127 @@ class InteractiveMenu:
 
         console.print(table)
         console.print()
+
+    def _choose_process_target(self) -> ProcessTarget | None:
+        """Let user pick one of top 5 processes, custom input, or (if available) all/select containers."""
+        console.print("[bold]Choose process or service to collect logs for[/bold]")
+        console.print()
+        top = get_top_processes(5)
+        for idx, (pid, name) in enumerate(top, 1):
+            console.print(f"  [bold]{idx}.[/bold] {name} (PID {pid})")
+        console.print(
+            "  [bold]6.[/bold] Enter a custom process, [dim]service name[/dim], or [dim]PID[/dim]"
+        )
+        container_info = get_container_runtime_info()
+        if container_info is not None:
+            console.print("  [bold]7.[/bold] All containers")
+            console.print("  [bold]8.[/bold] Select containers")
+        console.print()
+        choices = [str(i) for i in range(1, len(top) + 1)] + ["6"]
+        if container_info is not None:
+            choices.extend(["7", "8"])
+        choice = Prompt.ask("  Select", choices=choices, default="1")
+
+        choice_num = int(choice)
+        if choice_num <= len(top):
+            pid, name = top[choice_num - 1]
+            return ProcessTarget(
+                kind="pid",
+                value=str(pid),
+                display_name=f"{name} ({pid})",
+            )
+        if choice == "6":
+            return self._choose_process_target_custom()
+        if choice == "7" and container_info:
+            return self._choose_process_target_all_containers(container_info)
+        if choice == "8" and container_info:
+            return self._choose_process_target_select_containers(container_info)
+        return None
+
+    def _choose_process_target_custom(self) -> ProcessTarget | None:
+        """Prompt for custom service/PID/container; return target or None."""
+        custom = Prompt.ask(
+            "  Enter service name, container name/ID, or PID",
+            default="",
+        ).strip()
+        if not custom:
+            return None
+        target = resolve_target(custom)
+        if target is None:
+            console.print(
+                "[yellow]Could not resolve as PID, systemd unit, or container. "
+                "Skipping process-specific logs; general logs only.[/yellow]"
+            )
+            console.print()
+        return target
+
+    def _choose_process_target_all_containers(
+        self,
+        container_info: tuple[str, list[tuple[str, str]]],
+    ) -> ProcessTarget:
+        """Return target for all containers."""
+        runtime_path, _ = container_info
+        return ProcessTarget(
+            kind="containers_all",
+            value="",
+            runtime_bin=runtime_path,
+            display_name="All containers",
+        )
+
+    def _choose_process_target_select_containers(
+        self,
+        container_info: tuple[str, list[tuple[str, str]]],
+    ) -> ProcessTarget | None:
+        """Let user pick container numbers; return target or None."""
+        runtime_path, containers = container_info
+        for idx, (cid, cname) in enumerate(containers, 1):
+            console.print(
+                f"  [bold]{idx}.[/bold] {cname} [dim]({cid[:12]})[/dim]"
+            )
+        console.print()
+        sel = Prompt.ask(
+            "  Enter numbers to collect (e.g. 1,3,5 or 1-3)",
+            default="",
+        ).strip()
+        if not sel:
+            return None
+        ids = self._parse_container_selection(sel, len(containers))
+        if not ids:
+            console.print("[yellow]No valid selection. Skipping.[/yellow]")
+            console.print()
+            return None
+        selected_ids = [containers[i - 1][0] for i in sorted(ids)]
+        return ProcessTarget(
+            kind="containers_selected",
+            value=",".join(selected_ids),
+            runtime_bin=runtime_path,
+            display_name=f"{len(selected_ids)} container(s)",
+        )
+
+    @staticmethod
+    def _parse_container_selection(text: str, max_num: int) -> set[int]:
+        """Parse '1,3,5' or '1-3' or '1 2 3' into set of 1-based indices in range [1, max_num]."""
+        result: set[int] = set()
+        for part in text.replace(",", " ").split():
+            part = part.strip()
+            if not part:
+                continue
+            if "-" in part:
+                a_str, _, b_str = part.partition("-")
+                try:
+                    a, b = int(a_str.strip()), int(b_str.strip())
+                    for i in range(max(1, a), min(max_num, b) + 1):
+                        result.add(i)
+                except ValueError:
+                    continue
+            else:
+                try:
+                    n = int(part)
+                    if 1 <= n <= max_num:
+                        result.add(n)
+                except ValueError:
+                    continue
+        return result
 
     def _confirm_profiles(self, detection: DetectionResult) -> list[str]:
         """Let the user confirm or deselect detected profiles."""
@@ -153,9 +413,9 @@ class InteractiveMenu:
 
         return configs
 
-    def _choose_output_mode(self) -> bool:
+    def _choose_output_mode(self, step_label: str = "Step 3: Output mode") -> bool:
         """Let user choose API vs file output; return True to use API."""
-        console.print("[bold]Step 3: Output mode[/bold]")
+        console.print(f"[bold]{step_label}[/bold]")
         console.print()
 
         if self.api_running:

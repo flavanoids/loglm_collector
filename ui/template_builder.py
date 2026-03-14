@@ -6,6 +6,7 @@ Three main modes:
   - Response Labeler   — annotate collected JSON output with Response text
 """
 
+import copy
 import json
 from pathlib import Path
 from typing import Optional
@@ -16,6 +17,8 @@ from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
 from templates.store import (
+    BUILTIN_NAMES,
+    BUILTIN_TEMPLATES,
     INSTRUCTION_SUGGESTIONS,
     CustomSource,
     InstructionRule,
@@ -212,10 +215,30 @@ class TemplateManager:  # pylint: disable=too-few-public-methods
         """Enter the template management loop."""
         while True:
             _header("LogLM Template Manager")
-            templates = self._store.all()
 
+            # Built-in presets (read-only)
+            console.print(
+                "  [bold]Built-in presets[/bold] "
+                "[dim](read-only — use [c]lone to customise)[/dim]"
+            )
+            console.print()
+            builtin_table = Table(border_style="cyan", show_header=True, show_edge=False)
+            builtin_table.add_column("Name", style="cyan")
+            builtin_table.add_column("Description")
+            builtin_table.add_column("Rules", justify="right")
+            for t in BUILTIN_TEMPLATES:
+                builtin_table.add_row(
+                    t.name, t.description[:55], str(len(t.instruction_rules))
+                )
+            console.print(builtin_table)
+            console.print()
+
+            # User templates
+            templates = self._store.all()
+            console.print("  [bold]Your templates[/bold]")
+            console.print()
             if templates:
-                table = Table(border_style="blue", show_header=True)
+                table = Table(border_style="blue", show_header=True, show_edge=False)
                 table.add_column("#", justify="right", style="dim")
                 table.add_column("Name", style="bold")
                 table.add_column("Description")
@@ -229,12 +252,12 @@ class TemplateManager:  # pylint: disable=too-few-public-methods
                     )
                 console.print(table)
             else:
-                console.print("[dim]No templates saved yet.[/dim]")
+                console.print("  [dim]No templates saved yet.[/dim]")
 
             console.print()
             action = Prompt.ask(
-                "  [n]ew  [e]dit  [d]elete  [b]ack",
-                choices=["n", "e", "d", "b"],
+                "  [n]ew  [c]lone preset  [e]dit  [d]elete  [b]ack",
+                choices=["n", "c", "e", "d", "b"],
                 default="b",
             )
 
@@ -242,6 +265,8 @@ class TemplateManager:  # pylint: disable=too-few-public-methods
                 break
             if action == "n":
                 self._create()
+            elif action == "c":
+                self._clone_builtin()
             elif action == "e":
                 self._edit(templates)
             elif action == "d":
@@ -258,6 +283,25 @@ class TemplateManager:  # pylint: disable=too-few-public-methods
         t = _edit_template(t)
         self._store.save_template(t)
         console.print(f"[green]Template '{name}' saved.[/green]")
+        console.print()
+
+    def _clone_builtin(self) -> None:
+        _header("Clone Built-in Preset")
+        names = [t.name for t in BUILTIN_TEMPLATES]
+        name = _pick_from_list(names, "Select preset to clone", allow_skip=True)
+        if not name:
+            return
+        source = next(t for t in BUILTIN_TEMPLATES if t.name == name)
+        new_name = Prompt.ask("  Save as", default=f"{name}-custom").strip()
+        if not new_name:
+            return
+        if self._store.get(new_name):
+            console.print(f"[yellow]'{new_name}' already exists. Editing it.[/yellow]")
+        cloned = copy.deepcopy(source)
+        cloned.name = new_name
+        cloned = _edit_template(cloned)
+        self._store.save_template(cloned)
+        console.print(f"[green]Template '{new_name}' saved.[/green]")
         console.print()
 
     def _edit(self, templates: list[Template]) -> None:
@@ -295,36 +339,48 @@ class TemplateManager:  # pylint: disable=too-few-public-methods
 
 def select_template(store: TemplateStore) -> Optional[Template]:
     """Prompt user to choose a template (or none) before collection."""
-    templates = store.all()
-    _header("Select Template")
+    user_templates = store.all()
+    all_options: list[Template] = list(BUILTIN_TEMPLATES) + user_templates
 
+    _header("Select Template")
     console.print("  Templates customize [italic]Instruction[/italic] text per log type and")
     console.print("  can add custom log sources to the collection.")
     console.print()
 
-    if not templates:
-        console.print("  [dim]No templates saved. Use 'Manage Templates' to create one.[/dim]")
-        console.print()
-        Prompt.ask("  Press Enter to continue with defaults", default="")
-        return None
+    console.print("  [bold]Built-in presets:[/bold]")
+    for i, t in enumerate(BUILTIN_TEMPLATES, 1):
+        console.print(f"  {i:2}. [cyan]{t.name}[/cyan] — {t.description}")
 
-    options = ["(no template — use defaults)"] + [t.name for t in templates] + ["[Manage templates]"]
-    for i, opt in enumerate(options, 1):
-        console.print(f"  {i}. {opt}")
+    if user_templates:
+        console.print()
+        console.print("  [bold]Your templates:[/bold]")
+        base = len(BUILTIN_TEMPLATES)
+        for i, t in enumerate(user_templates, base + 1):
+            desc = f" — {t.description}" if t.description else ""
+            console.print(f"  {i:2}. {t.name}{desc}")
+
+    total = len(all_options)
+    no_tmpl_idx = total + 1
+    manage_idx = total + 2
     console.print()
-    choices = [str(i) for i in range(1, len(options) + 1)]
-    choice = Prompt.ask("  Select", choices=choices, default="1")
+    console.print(f"  {no_tmpl_idx:2}. (no template — use defaults)")
+    console.print(f"  {manage_idx:2}. [Manage templates]")
+    console.print()
+
+    choices = [str(i) for i in range(1, manage_idx + 1)]
+    choice = Prompt.ask("  Select", choices=choices, default=str(no_tmpl_idx))
     idx = int(choice) - 1
 
-    if idx == 0:
+    if idx == no_tmpl_idx - 1:
         return None
-    if idx == len(options) - 1:
+    if idx == manage_idx - 1:
         TemplateManager(store).run()
         return select_template(store)
 
-    selected = templates[idx - 1]
+    selected = all_options[idx]
+    tag = " [dim][built-in][/dim]" if selected.name in BUILTIN_NAMES else ""
     console.print(
-        f"  [green]Using template:[/green] [bold]{selected.name}[/bold]"
+        f"  [green]Using template:[/green] [bold]{selected.name}[/bold]{tag}"
         + (f" — {selected.description}" if selected.description else "")
     )
     console.print()

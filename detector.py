@@ -42,7 +42,7 @@ class SystemDetector:  # pylint: disable=too-few-public-methods
         return ProfileDetection(
             profile="general",
             confidence=1.0,
-            evidence=["Always included as base Linux profile"],
+            evidence=["Core system logs — always collected (base Linux profile)"],
         )
 
     def _detect_gpu(self) -> ProfileDetection:  # pylint: disable=too-many-branches,too-many-statements,too-many-locals
@@ -51,18 +51,18 @@ class SystemDetector:  # pylint: disable=too-few-public-methods
 
         # ── NVIDIA ────────────────────────────────────────────────────────
         if os.path.exists("/proc/driver/nvidia"):
-            evidence.append("/proc/driver/nvidia exists")
+            evidence.append("NVIDIA driver present (/proc/driver/nvidia)")
             confidence = max(confidence, 0.9)
 
         nvidia_devs = [f for f in os.listdir("/dev") if f.startswith("nvidia")] if os.path.exists("/dev") else []
         if nvidia_devs:
-            evidence.append(f"/dev/{nvidia_devs[0]} device present")
+            evidence.append(f"NVIDIA device node present (/dev/{nvidia_devs[0]})")
             confidence = max(confidence, 0.9)
 
         lsmod_out = run_command(["lsmod"], timeout=5)
         lsmod_lower = lsmod_out.lower()
         if "nvidia" in lsmod_lower:
-            evidence.append("nvidia module loaded (lsmod)")
+            evidence.append("NVIDIA kernel module loaded (lsmod)")
             confidence = max(confidence, 0.8)
 
         smi_out = run_command(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], timeout=10)
@@ -73,12 +73,12 @@ class SystemDetector:  # pylint: disable=too-few-public-methods
         # ── AMD ───────────────────────────────────────────────────────────
         for mod in ("amdgpu", "amdkfd", "radeon"):
             if mod in lsmod_lower:
-                evidence.append(f"{mod} module loaded (lsmod)")
+                evidence.append(f"AMD GPU kernel module loaded ({mod}, lsmod)")
                 confidence = max(confidence, 0.85)
                 break
 
         if os.path.exists("/dev/kfd"):
-            evidence.append("/dev/kfd (AMD KFD compute device) present")
+            evidence.append("AMD compute device present (/dev/kfd)")
             confidence = max(confidence, 0.9)
 
         vendor_path = "/sys/class/drm/card0/device/vendor"
@@ -94,10 +94,10 @@ class SystemDetector:  # pylint: disable=too-few-public-methods
                             dev_id = fh.read().strip()
                     except OSError:
                         pass
-                    evidence.append(f"AMD GPU detected via sysfs (DID={dev_id or '?'})")
+                    evidence.append(f"AMD GPU in sysfs (DID={dev_id or '?'})")
                     confidence = max(confidence, 0.9)
                 elif vendor == "0x10de":
-                    evidence.append("NVIDIA GPU detected via sysfs")
+                    evidence.append("NVIDIA GPU in sysfs")
                     confidence = max(confidence, 0.9)
             except OSError:
                 pass
@@ -129,7 +129,7 @@ class SystemDetector:  # pylint: disable=too-few-public-methods
         lsmod_lower = lsmod_out.lower()
         for mod in ("zfs", "btrfs", "md_mod"):
             if mod in lsmod_lower:
-                evidence.append(f"{mod} kernel module loaded")
+                evidence.append(f"Storage stack: {mod} kernel module loaded")
                 confidence = max(confidence, 0.8)
 
         if os.path.exists("/proc/mdstat"):
@@ -137,27 +137,31 @@ class SystemDetector:  # pylint: disable=too-few-public-methods
                 with open("/proc/mdstat", encoding="utf-8") as fh:
                     content = fh.read()
                 if "md" in content and "active" in content.lower():
-                    evidence.append("/proc/mdstat shows active RAID array")
+                    evidence.append("Software RAID array active (/proc/mdstat)")
                     confidence = max(confidence, 0.9)
                 elif len(content.strip()) > 20:
-                    evidence.append("/proc/mdstat present")
+                    evidence.append("RAID info present (/proc/mdstat)")
                     confidence = max(confidence, 0.5)
             except OSError:
                 pass
 
         zpool_out = run_command(["zpool", "list", "-H"], timeout=10)
         if zpool_out.strip():
-            evidence.append(f"zpool detected: {zpool_out.splitlines()[0][:60]}")
+            evidence.append(f"ZFS pool(s) detected: {zpool_out.splitlines()[0][:60]}")
             confidence = max(confidence, 0.9)
 
         try:
             import glob as globmod
             block_devs = globmod.glob("/dev/sd?") + globmod.glob("/dev/nvme?n?")
             if len(block_devs) > 2:
-                evidence.append(f"{len(block_devs)} block devices found (/dev/sd*, /dev/nvme*)")
+                evidence.append(
+                    f"{len(block_devs)} storage drive(s) detected (block devices: /dev/sd*, nvme*)"
+                )
                 confidence = max(confidence, 0.6)
             elif block_devs:
-                evidence.append(f"{len(block_devs)} block device(s) found")
+                evidence.append(
+                    f"{len(block_devs)} storage drive(s) detected (block device count)"
+                )
                 confidence = max(confidence, 0.3)
         except Exception:  # pylint: disable=broad-except
             pass
