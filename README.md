@@ -2,6 +2,8 @@
 
 A companion tool for [LogLM](https://github.com/lunyiliu/LogLM) that collects Linux system logs and formats them as LogLM-native `{Instruction, Input, Response}` JSON — ready for fine-tuning or API submission.
 
+**Status:** This software is **in active development and testing**. It has **not yet been verified to work** in all environments; use with caution until further testing is complete.
+
 ---
 
 ## Who it's for
@@ -45,6 +47,8 @@ The **General** profile (kernel errors, OOM, auth failures, failed units) is alw
 ---
 
 ## Installation
+
+*Note: This project is in active development and not yet verified; expect changes and possible issues.*
 
 ```bash
 git clone https://github.com/<your-username>/loglm_collector.git
