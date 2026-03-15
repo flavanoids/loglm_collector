@@ -4,6 +4,6 @@ __pycache__/
 loglm_output_*.json
 loglm_output_*.txt
 
-# Local AI / editor config (not part of repo)
+# Local editor / IDE config (not part of repo)
 .claude/
 .opencode/
