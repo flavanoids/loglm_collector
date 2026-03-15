@@ -27,6 +27,7 @@ The tool is **interactive only** (menus, no CLI flags). Use it when you want to 
 | **1 — Collect logs** | Detect → select template → confirm profiles → choose time range → format → save to file or POST to LogLM API |
 | **2 — Manage templates** | Create, edit, or delete templates (instruction rules, custom log sources) |
 | **3 — Label responses** | Load a collected JSON file and annotate `Response` fields for fine-tuning |
+| **Scout for errors** | Monitor `/var/log` and journalctl in real-time for a set duration, then report which sources raised attention |
 
 ---
 
