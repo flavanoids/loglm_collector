@@ -86,6 +86,41 @@ def _output(config: CollectionConfig, loglm_entries: list[dict], all_entries: li
     return str(json_path)
 
 
+def _handle_next_steps(
+    choice: tuple[str, str | None],
+    loglm_entries: list[dict],
+    output_path: str,
+    api_running: bool,
+    api_url: str,
+) -> None:
+    """Send to local/remote LogLM per user choice, or no-op for exit."""
+    next_action, remote_url = choice
+    json_path = Path(output_path)
+    if next_action == "local" and api_running:
+        console.print("[bold]Sending to local LogLM\u2026[/bold]")
+        with _spinner() as progress:
+            task = progress.add_task(
+                f"Sending {len(loglm_entries)} entries\u2026", total=None
+            )
+            responses = send_entries(loglm_entries, api_url)
+            progress.update(task, completed=True)
+        save_json(responses, json_path)
+        console.print("[green]✓ Entries sent to local LogLM and saved.[/green]")
+    elif next_action == "remote" and remote_url:
+        console.print(f"[bold]Sending to remote LogLM at {remote_url}\u2026[/bold]")
+        with _spinner() as progress:
+            task = progress.add_task(
+                f"Sending {len(loglm_entries)} entries\u2026", total=None
+            )
+            responses = send_entries(loglm_entries, remote_url)
+            progress.update(task, completed=True)
+        remote_path = json_path.parent / (json_path.stem + "_remote.json")
+        save_json(responses, remote_path)
+        console.print(
+            f"[green]✓ Entries sent to remote LogLM. Responses saved to {remote_path}[/green]"
+        )
+
+
 def _top_menu(store: TemplateStore, api_running: bool) -> str:  # pylint: disable=unused-argument
     """Show top-level action menu; return chosen action key."""
     from rich.prompt import Prompt  # pylint: disable=import-outside-toplevel
@@ -164,6 +199,16 @@ def main() -> int:
     elif template:
         summary.append((f"[dim]Template: {template.name}[/dim]", 0))
     menu.show_summary(summary, output_path, config.use_api and api_running)
+
+    _handle_next_steps(
+        menu.show_next_steps(
+            api_running, config.api_url, config.use_api and api_running
+        ),
+        loglm_entries,
+        output_path,
+        api_running,
+        config.api_url,
+    )
     return 0
 
 

@@ -466,3 +466,40 @@ class InteractiveMenu:
             console.print(f"[green]✓ Output saved to:[/green] [bold]{output_path}[/bold]")
 
         console.print()
+
+    def show_next_steps(
+        self,
+        api_running: bool,
+        api_url: str,
+        _already_sent_to_local: bool = False,
+    ) -> tuple[str, str | None]:
+        """Show 'What would you like to do next?' menu; return (action, remote_url_or_none).
+
+        action is 'local' | 'remote' | 'exit'.
+        For 'remote', the second value is the user-entered base URL.
+        """
+        console.print("[bold]What would you like to do next?[/bold]")
+        console.print()
+        console.print("  [bold]1.[/bold] Send to local LogLM")
+        if api_running:
+            console.print(f"      [dim]Use LogLM at {api_url}[/dim]")
+        else:
+            console.print("      [dim]Start LogLM locally first, then run this again[/dim]")
+        console.print("  [bold]2.[/bold] Send to remote LogLM")
+        console.print("      [dim]Enter the base URL of a LogLM API (e.g. https://loglm.example.com)[/dim]")
+        console.print("  [bold]3.[/bold] Exit (keep log local)")
+        console.print()
+        choice = Prompt.ask("  Select", choices=["1", "2", "3"], default="3")
+
+        if choice == "2":
+            default_url = "https://localhost:8000"
+            url = Prompt.ask(
+                "  Remote LogLM API base URL",
+                default=default_url,
+            ).strip()
+            if not url:
+                url = default_url
+            return ("remote", url.rstrip("/"))
+        if choice == "1":
+            return ("local", None)
+        return ("exit", None)
